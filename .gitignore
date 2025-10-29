@@ -1,0 +1,11 @@
+data/
+**/*.h5
+**/*.fits
+**/*.npy
+logs/
+temp/
+**/__pycache__/
+*.log
+*.tmp
+.DS_Store
+.vscode/
