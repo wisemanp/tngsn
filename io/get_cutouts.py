@@ -34,7 +34,7 @@ def get_api_key():
         api_key = input("Enter your TNG API key: ")
         if not api_key:
             raise ValueError("TNG API key is required. Set TNG_API_KEY environment variable or provide when prompted.")
-    logger.info(f"API key loaded: {'***' + api_key[-4:] if len(api_key) > 4 else '***'}")
+    #logger.info(f"API key loaded: {'***' + api_key[-4:] if len(api_key) > 4 else '***'}")
     return api_key
 
 def get_headers():
@@ -107,7 +107,7 @@ def get_simulation_base_url(sim):
         raise ValueError(f"Simulation {sim} not supported. Available: {list(bases.keys())}")
     
     base_url = bases[sim]
-    logger.info(f"Base URL for {sim}: {base_url}")
+    # logger.info(f"Base URL for {sim}: {base_url}")
     return base_url
 
 def get_subhalo_info(subhalo_id, sim):
