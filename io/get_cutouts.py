@@ -122,7 +122,35 @@ def get_simulation_base_url(sim):
     logger.info(f"Base URL for {sim}: {base_url}")
     return base_url
 
-def get_subhalo_cutout(subhalo_id, sim, output_dir, star_fields=None, gas_fields=None):
+def get_subhalo_info(subhalo_id, sim):
+    """
+    Get subhalo information including stellar mass.
+    
+    Parameters:
+    -----------
+    subhalo_id : int
+        Subhalo ID
+    sim : str
+        Simulation name
+        
+    Returns:
+    --------
+    dict : Subhalo information including mass_stars
+    """
+    base_url = get_simulation_base_url(sim)
+    subhalo_url = base_url + f'subhalos/{subhalo_id}/'
+    logger.info(f"Fetching subhalo info for {subhalo_id} from: {subhalo_url}")
+    
+    subinfo = get_tng_data(subhalo_url)
+    
+    # Log relevant info
+    mass_stars = subinfo.get('mass_stars', 0.0)
+    logger.info(f"Subhalo {subhalo_id}: stellar mass = {mass_stars:.3e} (10^10 Msun)")
+    logger.info(f"Subhalo {subhalo_id}: log10(M*/Msun) = {np.log10(mass_stars * 1e10):.2f}")
+    
+    return subinfo
+
+def get_subhalo_cutout(subhalo_id, sim, output_dir, star_fields=None, gas_fields=None, subinfo=None):
     """
     Download cutout data for a specific subhalo.
     
@@ -138,6 +166,8 @@ def get_subhalo_cutout(subhalo_id, sim, output_dir, star_fields=None, gas_fields
         Star particle fields to download
     gas_fields : list, optional
         Gas particle fields to download
+    subinfo : dict, optional
+        Pre-fetched subhalo info to avoid extra API call
         
     Returns:
     --------
@@ -156,14 +186,10 @@ def get_subhalo_cutout(subhalo_id, sim, output_dir, star_fields=None, gas_fields
     logger.info(f"Star fields: {star_fields}")
     logger.info(f"Gas fields: {gas_fields}")
     
-    base_url = get_simulation_base_url(sim)
-    
     try:
-        # Get subhalo info
-        subhalo_url = base_url + f'subhalos/{subhalo_id}/'
-        logger.info(f"Fetching subhalo info from: {subhalo_url}")
-        
-        subinfo = get_tng_data(subhalo_url)
+        # Get subhalo info if not provided
+        if subinfo is None:
+            subinfo = get_subhalo_info(subhalo_id, sim)
         
         logger.info(f"Subhalo info received. Available fields: {list(subinfo.keys())}")
         logger.info(f"Cutout URL: {subinfo.get('cutouts', {}).get('subhalo', 'Not found')}")
@@ -338,9 +364,90 @@ def find_kids_subhalo_ids(kids_data_dir):
     
     return subhalo_ids
 
-def download_cutouts_for_kids(kids_data_dir, sim, output_dir='data', max_download=None):
+def select_low_mass_subhalos(subhalo_ids, sim, max_download, mass_threshold=10**9.5):
+    """
+    Select subhalos with stellar mass below threshold for downloading.
+    
+    Parameters:
+    -----------
+    subhalo_ids : list
+        List of subhalo IDs to check
+    sim : str
+        Simulation name
+    max_download : int
+        Maximum number to select
+    mass_threshold : float
+        Mass threshold in solar masses (default: 10^9.5 Msun)
+        
+    Returns:
+    --------
+    list : List of selected subhalo IDs with masses below threshold
+    list : List of tuples (subhalo_id, mass_stars, log_mass) for all checked
+    """
+    
+    logger.info(f"Selecting low-mass subhalos from {len(subhalo_ids)} candidates")
+    logger.info(f"Mass threshold: {mass_threshold:.1e} Msun = {np.log10(mass_threshold):.1f} log(Msun)")
+    logger.info(f"Target selection: {max_download} subhalos")
+    
+    # Convert threshold to TNG units (10^10 Msun)
+    mass_threshold_tng = mass_threshold / 1e10
+    logger.info(f"Mass threshold in TNG units: {mass_threshold_tng:.3e} (10^10 Msun)")
+    
+    subhalo_masses = []
+    low_mass_candidates = []
+    
+    print(f"Checking stellar masses for {len(subhalo_ids)} subhalos...")
+    
+    for i, subhalo_id in enumerate(tqdm(subhalo_ids, desc="Checking masses")):
+        try:
+            subinfo = get_subhalo_info(subhalo_id, sim)
+            mass_stars = subinfo.get('mass_stars', 0.0)  # In 10^10 Msun units
+            mass_msun = mass_stars * 1e10  # Convert to solar masses
+            log_mass = np.log10(mass_msun) if mass_msun > 0 else -np.inf
+            
+            subhalo_masses.append((subhalo_id, mass_stars, log_mass))
+            
+            # Check if below threshold
+            if mass_msun < mass_threshold and mass_msun > 0:
+                low_mass_candidates.append((subhalo_id, mass_stars, log_mass))
+                logger.info(f"LOW MASS CANDIDATE: SubhaloID {subhalo_id}, "
+                           f"M* = {mass_stars:.3e} (10^10 Msun) = {log_mass:.2f} log(Msun)")
+            else:
+                logger.info(f"Above threshold: SubhaloID {subhalo_id}, "
+                           f"M* = {mass_stars:.3e} (10^10 Msun) = {log_mass:.2f} log(Msun)")
+            
+        except Exception as e:
+            logger.error(f"Error getting mass for subhalo {subhalo_id}: {e}")
+            subhalo_masses.append((subhalo_id, 0.0, -np.inf))
+            continue
+    
+    # Sort low mass candidates by mass (lowest first)
+    low_mass_candidates.sort(key=lambda x: x[1])  # Sort by mass_stars
+    
+    logger.info(f"Found {len(low_mass_candidates)} subhalos below mass threshold")
+    
+    if low_mass_candidates:
+        logger.info("Low mass candidates (sorted by mass):")
+        for subhalo_id, mass_stars, log_mass in low_mass_candidates[:10]:  # Show first 10
+            logger.info(f"  SubhaloID {subhalo_id}: {log_mass:.2f} log(Msun)")
+    
+    # Select the lowest mass ones up to max_download
+    selected_ids = [subhalo_id for subhalo_id, _, _ in low_mass_candidates[:max_download]]
+    
+    logger.info(f"Selected {len(selected_ids)} lowest mass subhalos for download")
+    print(f"Selected {len(selected_ids)} subhalos with M* < {mass_threshold:.1e} Msun")
+    
+    if selected_ids:
+        print("Selected subhalos (lowest mass first):")
+        for i, (subhalo_id, mass_stars, log_mass) in enumerate(low_mass_candidates[:len(selected_ids)]):
+            print(f"  {i+1}. SubhaloID {subhalo_id}: {log_mass:.2f} log(Msun)")
+    
+    return selected_ids, subhalo_masses
+
+def download_cutouts_for_kids(kids_data_dir, sim, output_dir='data', max_download=None, mass_threshold=10**9.5):
     """
     Find subhalo IDs from KIDS directory and download corresponding cutouts.
+    If max_download is specified, select the lowest mass subhalos.
     
     Parameters:
     -----------
@@ -351,7 +458,9 @@ def download_cutouts_for_kids(kids_data_dir, sim, output_dir='data', max_downloa
     output_dir : str
         Output directory for cutouts
     max_download : int, optional
-        Maximum number of cutouts to download (for testing)
+        Maximum number of cutouts to download (selects lowest mass if specified)
+    mass_threshold : float
+        Mass threshold in solar masses for low-mass selection (default: 10^9.5 Msun)
         
     Returns:
     --------
@@ -363,14 +472,34 @@ def download_cutouts_for_kids(kids_data_dir, sim, output_dir='data', max_downloa
     logger.info(f"Simulation: {sim}")
     logger.info(f"Output directory: {output_dir}")
     logger.info(f"Max download limit: {max_download}")
+    logger.info(f"Mass threshold: {mass_threshold:.1e} Msun")
     
     # Find subhalo IDs from KIDS
-    subhalo_ids = find_kids_subhalo_ids(kids_data_dir)
+    all_subhalo_ids = find_kids_subhalo_ids(kids_data_dir)
     
-    if max_download:
-        subhalo_ids = subhalo_ids[:max_download]
-        logger.info(f"Limited to first {max_download} subhalos for testing")
-        print(f"Limited to first {max_download} subhalos for testing")
+    if max_download and max_download < len(all_subhalo_ids):
+        logger.info(f"Selecting {max_download} lowest mass subhalos from {len(all_subhalo_ids)} available")
+        print(f"Selecting {max_download} lowest mass subhalos from {len(all_subhalo_ids)} available...")
+        
+        # Select low mass subhalos
+        selected_ids, all_masses = select_low_mass_subhalos(
+            all_subhalo_ids, sim, max_download, mass_threshold
+        )
+        
+        subhalo_ids = selected_ids
+        logger.info(f"Selected {len(subhalo_ids)} subhalos for download")
+        
+        # Save mass information
+        mass_file = f'subhalo_masses_{sim}.csv'
+        mass_df = pd.DataFrame(all_masses, columns=['subhalo_id', 'mass_stars_1e10msun', 'log_mass_msun'])
+        mass_df.to_csv(mass_file, index=False)
+        logger.info(f"Saved mass information to {mass_file}")
+        print(f"Saved mass information to {mass_file}")
+        
+    else:
+        subhalo_ids = all_subhalo_ids
+        logger.info(f"Processing all {len(subhalo_ids)} subhalos (no mass selection)")
+        print(f"Processing all {len(subhalo_ids)} subhalos")
     
     # Check which cutouts already exist
     existing_cutouts = []
@@ -411,7 +540,8 @@ def download_cutouts_for_kids(kids_data_dir, sim, output_dir='data', max_downloa
                 logger.error(f"Failed to download subhalo {subhalo_id}")
     
     results = {
-        'kids_subhalos': len(subhalo_ids),
+        'kids_subhalos': len(all_subhalo_ids),
+        'selected_subhalos': len(subhalo_ids),
         'already_downloaded': len(existing_cutouts),
         'newly_downloaded': len(downloaded),
         'failed': len(failed),
@@ -448,7 +578,9 @@ def main():
     parser.add_argument('--kids-dir', 
                        help='Path to KIDS data directory (required for kids mode)')
     parser.add_argument('--max-download', type=int,
-                       help='Maximum number to download (for testing)')
+                       help='Maximum number to download (selects lowest mass in kids mode)')
+    parser.add_argument('--mass-threshold', type=float, default=10**9.5,
+                       help='Mass threshold in Msun for low-mass selection (default: 10^9.5)')
     
     args = parser.parse_args()
     
@@ -497,12 +629,14 @@ def main():
             kids_data_dir=args.kids_dir,
             sim=args.sim,
             output_dir=args.output_dir,
-            max_download=args.max_download
+            max_download=args.max_download,
+            mass_threshold=args.mass_threshold
         )
         
         logger.info("=== DOWNLOAD SUMMARY ===")
         print("=== DOWNLOAD SUMMARY ===")
         print(f"Total KIDS subhalos: {results['kids_subhalos']}")
+        print(f"Selected for processing: {results['selected_subhalos']}")
         print(f"Already downloaded: {results['already_downloaded']}")
         print(f"Newly downloaded: {results['newly_downloaded']}")
         print(f"Failed downloads: {results['failed']}")
