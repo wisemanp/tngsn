@@ -11,7 +11,17 @@ from pathlib import Path
 
 # TNG API configuration
 BASE_URL = 'http://www.tng-project.org/api/'
-HEADERS = {"api-key": "eba6365a63ff327c63d284349c914245"}
+
+def get_api_key():
+    """Get API key from environment variable or prompt user."""
+    api_key = os.environ.get('TNG_API_KEY')
+    if not api_key:
+        api_key = input("Enter your TNG API key: ")
+        if not api_key:
+            raise ValueError("TNG API key is required. Set TNG_API_KEY environment variable or provide when prompted.")
+    return api_key
+
+HEADERS = {"api-key": get_api_key()}
 
 def get_tng_data(path, params=None, savepath=None):
     """
