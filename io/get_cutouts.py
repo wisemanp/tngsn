@@ -25,7 +25,7 @@ def setup_logging(level=logging.INFO):
     )
     return logging.getLogger(__name__)
 
-logger = setup_logging()
+logger = setup_logging(logging.INFO)  # Set to INFO level by default
 
 def get_api_key():
     """Get API key from environment variable or prompt user."""
@@ -41,7 +41,6 @@ def get_headers():
     """Get headers with API key."""
     api_key = get_api_key()
     headers = {"api-key": api_key}
-    logger.debug(f"Headers created with API key ending in: {'***' + api_key[-4:] if len(api_key) > 4 else '***'}")
     return headers
 
 def get_tng_data(path, params=None, savepath=None):
@@ -63,22 +62,12 @@ def get_tng_data(path, params=None, savepath=None):
     """
     headers = get_headers()
     
-    # Log the exact request details
-    logger.info(f"Making API request:")
-    logger.info(f"  URL: {path}")
-    logger.info(f"  Params: {params}")
-    logger.info(f"  Headers: {dict(headers)}")
-    
     try:
         r = requests.get(path, params=params, headers=headers)
-        logger.info(f"Response status: {r.status_code}")
-        logger.info(f"Response headers: {dict(r.headers)}")
-        
         r.raise_for_status()
 
         if r.headers['content-type'] == 'application/json':
             response_data = r.json()
-            logger.info(f"JSON response received with {len(response_data)} keys: {list(response_data.keys()) if isinstance(response_data, dict) else 'List response'}")
             return response_data
         
         if 'content-disposition' in r.headers:
@@ -87,7 +76,6 @@ def get_tng_data(path, params=None, savepath=None):
             
             filename = savepath + r.headers['content-disposition'].split("filename=")[1]
             logger.info(f'Downloading file: {filename}')
-            logger.info(f'File size: {len(r.content)} bytes')
             
             with open(filename, 'wb') as f:
                 f.write(r.content)
@@ -139,15 +127,8 @@ def get_subhalo_info(subhalo_id, sim):
     """
     base_url = get_simulation_base_url(sim)
     subhalo_url = base_url + f'subhalos/{subhalo_id}/'
-    logger.info(f"Fetching subhalo info for {subhalo_id} from: {subhalo_url}")
     
     subinfo = get_tng_data(subhalo_url)
-    
-    # Log relevant info
-    mass_stars = subinfo.get('mass_stars', 0.0)
-    logger.info(f"Subhalo {subhalo_id}: stellar mass = {mass_stars:.3e} (10^10 Msun)")
-    logger.info(f"Subhalo {subhalo_id}: log10(M*/Msun) = {np.log10(mass_stars * 1e10):.2f}")
-    
     return subinfo
 
 def get_subhalo_cutout(subhalo_id, sim, output_dir, star_fields=None, gas_fields=None, subinfo=None):
@@ -174,8 +155,6 @@ def get_subhalo_cutout(subhalo_id, sim, output_dir, star_fields=None, gas_fields
     str : Path to downloaded file, or None if failed
     """
     
-    logger.info(f"Starting cutout download for subhalo {subhalo_id}")
-    
     if star_fields is None:
         star_fields = ['Masses', 'Coordinates', 'GFM_InitialMass', 
                       'GFM_Metallicity', 'GFM_StellarFormationTime']
@@ -183,21 +162,14 @@ def get_subhalo_cutout(subhalo_id, sim, output_dir, star_fields=None, gas_fields
     if gas_fields is None:
         gas_fields = ['Coordinates', 'StarFormationRate', 'GFM_Metallicity']
     
-    logger.info(f"Star fields: {star_fields}")
-    logger.info(f"Gas fields: {gas_fields}")
-    
     try:
         # Get subhalo info if not provided
         if subinfo is None:
             subinfo = get_subhalo_info(subhalo_id, sim)
         
-        logger.info(f"Subhalo info received. Available fields: {list(subinfo.keys())}")
-        logger.info(f"Cutout URL: {subinfo.get('cutouts', {}).get('subhalo', 'Not found')}")
-        
         # Create output directory
         savepath = os.path.join(output_dir, sim, '96', str(subhalo_id))
         os.makedirs(savepath, exist_ok=True)
-        logger.info(f"Output directory created: {savepath}")
         savepath += '/'  # Add trailing slash for API
         
         # Build query string
@@ -205,12 +177,9 @@ def get_subhalo_cutout(subhalo_id, sim, output_dir, star_fields=None, gas_fields
         gas_query = ','.join(gas_fields)
         cutout_query = f'gas={gas_query}&stars={star_query}'
         
-        logger.info(f"Cutout query string: {cutout_query}")
-        
         # Build full cutout URL
         cutout_base_url = subinfo['cutouts']['subhalo']
         full_cutout_url = f"{cutout_base_url}?{cutout_query}"
-        logger.info(f"Full cutout URL: {full_cutout_url}")
         
         print(f'Downloading cutout for subhalo {subhalo_id}')
         
@@ -264,7 +233,6 @@ def get_random_subhalos(sim, n_halos=1000, min_stellar_mass=0.01, output_dir='da
         try:
             # Build subhalo list URL
             subhalo_list_url = base_url + f'subhalos/?mass_stars__gte={min_stellar_mass}&limit=100&offset={100*i}&order_by=-mass_stars'
-            logger.info(f"API call {i+1}/{n_calls}: {subhalo_list_url}")
             
             # Get 100 massive subhalos
             subs = get_tng_data(subhalo_list_url)
@@ -273,8 +241,6 @@ def get_random_subhalos(sim, n_halos=1000, min_stellar_mass=0.01, output_dir='da
                 logger.warning(f"No more subhalos found at offset {100*i}")
                 print(f"No more subhalos found at offset {100*i}")
                 break
-            
-            logger.info(f"Retrieved {len(subs['results'])} subhalos from API call {i+1}")
             
             # Select 2 random subhalos from this batch
             n_available = len(subs['results'])
@@ -285,11 +251,9 @@ def get_random_subhalos(sim, n_halos=1000, min_stellar_mass=0.01, output_dir='da
                 break
                 
             rand_indices = np.random.choice(n_available, size=n_select, replace=False)
-            logger.info(f"Selected random indices: {rand_indices}")
             
             for rand_idx in rand_indices:
                 subhalo_id = subs['results'][rand_idx]['id']
-                logger.info(f"Processing subhalo {subhalo_id} (index {rand_idx})")
                 
                 # Download cutout
                 result = get_subhalo_cutout(subhalo_id, sim, output_dir)
@@ -391,14 +355,14 @@ def select_low_mass_subhalos(subhalo_ids, sim, max_download, mass_threshold=10**
     
     # Convert threshold to TNG units (10^10 Msun)
     mass_threshold_tng = mass_threshold / 1e10
-    logger.info(f"Mass threshold in TNG units: {mass_threshold_tng:.3e} (10^10 Msun)")
     
     subhalo_masses = []
     low_mass_candidates = []
+    above_threshold_count = 0
     
     print(f"Checking stellar masses for {len(subhalo_ids)} subhalos...")
     
-    for i, subhalo_id in enumerate(tqdm(subhalo_ids, desc="Checking masses")):
+    for subhalo_id in tqdm(subhalo_ids, desc="Checking masses"):
         try:
             subinfo = get_subhalo_info(subhalo_id, sim)
             mass_stars = subinfo.get('mass_stars', 0.0)  # In 10^10 Msun units
@@ -410,37 +374,38 @@ def select_low_mass_subhalos(subhalo_ids, sim, max_download, mass_threshold=10**
             # Check if below threshold
             if mass_msun < mass_threshold and mass_msun > 0:
                 low_mass_candidates.append((subhalo_id, mass_stars, log_mass))
-                logger.info(f"LOW MASS CANDIDATE: SubhaloID {subhalo_id}, "
-                           f"M* = {mass_stars:.3e} (10^10 Msun) = {log_mass:.2f} log(Msun)")
             else:
-                logger.info(f"Above threshold: SubhaloID {subhalo_id}, "
-                           f"M* = {mass_stars:.3e} (10^10 Msun) = {log_mass:.2f} log(Msun)")
+                above_threshold_count += 1
             
         except Exception as e:
             logger.error(f"Error getting mass for subhalo {subhalo_id}: {e}")
             subhalo_masses.append((subhalo_id, 0.0, -np.inf))
+            above_threshold_count += 1  # Count errors as above threshold
             continue
     
     # Sort low mass candidates by mass (lowest first)
     low_mass_candidates.sort(key=lambda x: x[1])  # Sort by mass_stars
     
-    logger.info(f"Found {len(low_mass_candidates)} subhalos below mass threshold")
+    logger.info(f"Mass check results:")
+    logger.info(f"  Below threshold (< {mass_threshold:.1e} Msun): {len(low_mass_candidates)}")
+    logger.info(f"  Above threshold (>= {mass_threshold:.1e} Msun): {above_threshold_count}")
+    
+    print(f"Mass check results:")
+    print(f"  Below threshold (< {mass_threshold:.1e} Msun): {len(low_mass_candidates)}")
+    print(f"  Above threshold (>= {mass_threshold:.1e} Msun): {above_threshold_count}")
     
     if low_mass_candidates:
-        logger.info("Low mass candidates (sorted by mass):")
-        for subhalo_id, mass_stars, log_mass in low_mass_candidates[:10]:  # Show first 10
-            logger.info(f"  SubhaloID {subhalo_id}: {log_mass:.2f} log(Msun)")
+        logger.info("Lowest mass candidates:")
+        print("Lowest mass candidates:")
+        for i, (subhalo_id, mass_stars, log_mass) in enumerate(low_mass_candidates[:10]):  # Show first 10
+            logger.info(f"  {i+1}. SubhaloID {subhalo_id}: {log_mass:.2f} log(Msun)")
+            print(f"  {i+1}. SubhaloID {subhalo_id}: {log_mass:.2f} log(Msun)")
     
     # Select the lowest mass ones up to max_download
     selected_ids = [subhalo_id for subhalo_id, _, _ in low_mass_candidates[:max_download]]
     
     logger.info(f"Selected {len(selected_ids)} lowest mass subhalos for download")
-    print(f"Selected {len(selected_ids)} subhalos with M* < {mass_threshold:.1e} Msun")
-    
-    if selected_ids:
-        print("Selected subhalos (lowest mass first):")
-        for i, (subhalo_id, mass_stars, log_mass) in enumerate(low_mass_candidates[:len(selected_ids)]):
-            print(f"  {i+1}. SubhaloID {subhalo_id}: {log_mass:.2f} log(Msun)")
+    print(f"Selected {len(selected_ids)} subhalos for download")
     
     return selected_ids, subhalo_masses
 
@@ -529,12 +494,10 @@ def download_cutouts_for_kids(kids_data_dir, sim, output_dir='data', max_downloa
         print(f"Downloading {len(missing_cutouts)} missing cutouts...")
         
         for subhalo_id in tqdm(missing_cutouts, desc="Downloading cutouts"):
-            logger.info(f"Downloading cutout for subhalo {subhalo_id}")
             result = get_subhalo_cutout(subhalo_id, sim, output_dir)
             
             if result:
                 downloaded.append(subhalo_id)
-                logger.info(f"Successfully downloaded subhalo {subhalo_id}")
             else:
                 failed.append(subhalo_id)
                 logger.error(f"Failed to download subhalo {subhalo_id}")
