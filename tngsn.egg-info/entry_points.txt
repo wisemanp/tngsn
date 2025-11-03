@@ -1,0 +1,3 @@
+[console_scripts]
+tngsn-run = run_simulation:main
+tngsn-simulate = snsims.simulation:main

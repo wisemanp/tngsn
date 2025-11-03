@@ -1,0 +1,85 @@
+# TNG-SN Simulation Configuration
+# Default parameters for supernova simulation
+
+# Simulation settings
+simulation:
+  name: "TNG50-1"
+  snapshot: 99
+  n_cores: 16
+  output_dir: "simout"
+  min_stellar_mass: 5.0e9  # Minimum stellar mass in solar masses
+  max_stellar_mass: null  # Maximum stellar mass (null = no limit)
+
+# Subhalo selection parameters
+subhalo_selection:
+  method: uniform  # uniform, log_uniform, observed, mass_weighted
+  mass_distribution: uniform  # Distribution to sample from
+  mass_bins: null  # Number of mass bins for stratified sampling
+  selection_seed: 42  # Random seed for reproducible selection
+  
+# Photometry configuration
+photometry:
+  mode: auto  # auto, kids, regular
+  mass_threshold: 1e9.5  # Mass threshold for auto mode (solar masses)
+  force_kids: false  # Force all galaxies to use KIDS
+  force_regular: false  # Force all galaxies to use regular
+  bands: ['g', 'r', 'i', 'z']
+  zero_points:
+    g: 25.0
+    r: 25.0
+    i: 25.0
+    z: 25.0
+  error_floor: 0.1
+  kids_results_dir: null  # Override default KIDS results path
+  kids_aperture_mode: direct  # 'direct' for aperture photometry on KIDS images, 'precomputed' for saved results
+  kids_image_type: noisy  # 'original' or 'noisy' KIDS images
+
+# Morphology configuration  
+morphology:
+  mode: auto  # auto, kids, regular
+  band: i  # Band for regular morphology
+  rhalf_correction: 1.470588  # 1/0.68 correction factor
+  dlr_default: 99.99  # Default DLR for failed calculations
+
+# Delay Time Distribution parameters
+dtd:
+  function: "powerlaw"
+  A: 2.11e-13
+  beta: -1.13
+  t0: 40  # Minimum delay time in Myr
+
+# Light curve parameters
+light_curve:
+  # Ginolin+25 age-metallicity x1 parameters
+  x1_params: [0.25, 0.55, -1.33, 0.63, -0.3, 0.18, 0.98, -0.128, 5]
+  
+  # Age step parameters
+  age_step:
+    agesplit: 3.0  # Gyr
+    Ka: -0.128
+    step_high: 0.1
+    step_low: -0.1
+    mabs_base: -19.3
+
+  # Color parameter (simple)
+  color:
+    mean: 0.0
+    sigma: 0.1
+
+# Hubble diagram parameters
+cosmology:
+  alpha: -0.14  # Stretch correction
+  beta: 3.15    # Color correction
+  mabs: -19.3   # Absolute magnitude
+# Root path configuration - all other paths are relative to this
+paths:
+  root_path: "."  # Current directory by default
+  
+  # Relative paths from root_path
+  galmeta_file: "data/{simulation}/galmeta.csv"
+  morph_file: "data/{simulation}/morphs_i.hdf5"
+  cutout_pattern: "data/{simulation}/{subhalo_id}/cutout_{subhalo_id}.hdf5"
+  ages_pattern: "data/{simulation}/{subhalo_id}/{subhalo_id}_ages.dat"
+  image_pattern: "data/{simulation}/{subhalo_id}/broadband_{subhalo_id}.fits"
+  kids_results_dir: "data/{simulation}/KIDS/results"
+  kids_image_pattern: "data/{simulation}/KIDS/snapnum_096/zx/data/broadband_{subhalo_id}.fits"

@@ -1,0 +1,34 @@
+# Include important files
+include README.md
+include LICENSE
+include pyproject.toml
+include setup.py
+
+# Include configuration files
+recursive-include snsims/config *.yaml *.yml
+
+# Include example files
+include example_usage.py
+include run_simulation.py
+
+# Include data files (if any)
+recursive-include data *.csv *.txt
+graft aura
+
+# Exclude unwanted files
+global-exclude *.pyc
+global-exclude *.pyo
+global-exclude __pycache__
+global-exclude .DS_Store
+global-exclude *.so
+global-exclude .git*
+recursive-exclude * __pycache__
+recursive-exclude * *.py[co]
+
+# Exclude large data files and results
+exclude all_sim.h5
+exclude *.fits
+exclude *.h5
+recursive-exclude simout *
+recursive-exclude figs *.png *.pdf
+recursive-exclude data *.fits *.h5 *.hdf5

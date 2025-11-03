@@ -1,3 +1,55 @@
+Metadata-Version: 2.4
+Name: tngsn
+Version: 1.0.0
+Summary: TNG Supernova Simulation Pipeline - A modular package for generating supernova populations from TNG simulation data
+Author-email: TNG-SN Team <pwise@example.com>
+Maintainer-email: Paul Wiseman <pwise@example.com>
+License: MIT
+Project-URL: Homepage, https://github.com/wisemanp/tngsn
+Project-URL: Repository, https://github.com/wisemanp/tngsn.git
+Project-URL: Documentation, https://github.com/wisemanp/tngsn#readme
+Project-URL: Bug Tracker, https://github.com/wisemanp/tngsn/issues
+Keywords: astronomy,supernova,cosmology,simulation,TNG,IllustrisTNG
+Classifier: Development Status :: 4 - Beta
+Classifier: Intended Audience :: Science/Research
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: OS Independent
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.8
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Topic :: Scientific/Engineering :: Astronomy
+Classifier: Topic :: Scientific/Engineering :: Physics
+Requires-Python: >=3.8
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: numpy>=1.20.0
+Requires-Dist: pandas>=1.3.0
+Requires-Dist: astropy>=5.0.0
+Requires-Dist: photutils>=1.5.0
+Requires-Dist: h5py>=3.0.0
+Requires-Dist: tqdm>=4.60.0
+Requires-Dist: pyyaml>=6.0
+Requires-Dist: scipy>=1.7.0
+Requires-Dist: matplotlib>=3.5.0
+Requires-Dist: sep>=1.2.0
+Requires-Dist: requests>=2.25.0
+Provides-Extra: dev
+Requires-Dist: pytest>=6.0; extra == "dev"
+Requires-Dist: pytest-cov>=2.0; extra == "dev"
+Requires-Dist: black>=21.0; extra == "dev"
+Requires-Dist: flake8>=3.9; extra == "dev"
+Requires-Dist: isort>=5.0; extra == "dev"
+Requires-Dist: mypy>=0.900; extra == "dev"
+Provides-Extra: docs
+Requires-Dist: sphinx>=4.0; extra == "docs"
+Requires-Dist: sphinx-rtd-theme>=1.0; extra == "docs"
+Requires-Dist: sphinx-autodoc-typehints>=1.12; extra == "docs"
+Provides-Extra: all
+Requires-Dist: tngsn[dev,docs]; extra == "all"
+Dynamic: license-file
+
 # TNG Supernova Simulation Pipeline
 
 A modular Python package for generating supernova populations from TNG simulation data with support for both regular TNG images and KIDS survey data.

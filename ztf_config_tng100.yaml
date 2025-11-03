@@ -1,0 +1,87 @@
+# ZTF-like SN Ia Survey Configuration for TNG100-1
+# Optimized for low-z, volume-limited supernova simulation
+# to reproduce essential SN Ia correlations (stretch vs mass, stretch vs sSFR, Hubble residuals)
+# Uses Ginolin+25 age-metallicity relation for x1 stretch parameter
+
+# Simulation settings - TNG100-1 for larger volume
+simulation:
+  name: "TNG100-1"           # Changed to TNG100-1
+  snapshot: 99
+  n_cores: 16
+  output_dir: "simout_tng100"
+  min_stellar_mass: 5.0e9    # Lower mass limit for volume-limited survey
+  max_stellar_mass: 1.0e12   # Upper mass limit to focus on typical ZTF hosts
+
+# Subhalo selection - Use observed mass function for realistic host distribution
+subhalo_selection:
+  method: observed            # Match observed galaxy mass function
+  mass_distribution: observed # Use realistic mass distribution
+  mass_bins: 10              # Stratified sampling across mass bins
+  selection_seed: 42         # Reproducible selection
+  
+# Photometry - Auto mode with lower mass threshold for KIDS
+photometry:
+  mode: auto                 # Automatic KIDS/regular selection
+  mass_threshold: 3.16e9     # 10^9.5 solar masses (KIDS below, regular above)
+  force_kids: false
+  force_regular: false
+  bands: ['g', 'r', 'i', 'z']
+  zero_points:
+    g: 25.0
+    r: 25.0
+    i: 25.0
+    z: 25.0
+  error_floor: 0.1
+  kids_aperture_mode: direct
+  kids_image_type: noisy
+
+# Morphology - Auto mode matching photometry
+morphology:
+  mode: auto
+  band: i
+  rhalf_correction: 1.470588  # 1/0.68 correction factor
+  dlr_default: 99.99
+
+# DTD parameters - CRITICAL for reproducing SN Ia correlations
+dtd:
+  function: "powerlaw"
+  A: 2.11e-13               # DTD normalization (exactly as original)
+  beta: -1.13               # DTD power-law slope (exactly as original)
+  t0: 40                    # Minimum delay time in Myr (exactly as original)
+
+# Light curve parameters - CRITICAL Ginolin+25 physics
+light_curve:
+  # Ginolin+25 age-metallicity x1 parameters (EXACTLY as original)
+  x1_params: [0.25, 0.55, -1.33, 0.63, -0.3, 0.18, 0.98, -0.128, 5]
+  
+  # Age step parameters (EXACTLY as original)
+  age_step:
+    agesplit: 3.0           # Age split in Gyr
+    Ka: -0.128              # Age coefficient (CRITICAL)
+    step_high: 0.1
+    step_low: -0.1
+    mabs_base: -19.3
+
+  # Color parameter
+  color:
+    mean: 0.0
+    sigma: 0.1
+
+# Cosmology parameters - CRITICAL for Hubble residuals
+cosmology:
+  alpha: -0.14              # Stretch correction (exactly as original)
+  beta: 3.15                # Color correction (exactly as original)  
+  mabs: -19.3               # Absolute magnitude (exactly as original)
+
+# Root path configuration - all other paths are relative to this
+paths:
+  root_path: "/Users/pwise/data/tngsn"  # Current directory by default
+  
+  # Relative paths from root_path
+  galmeta_file: "data/{simulation}/galmeta.csv"
+  morph_file: "data/{simulation}/morphs_i.hdf5"
+  cutout_pattern: "data/{simulation}/{subhalo_id}/cutout_{subhalo_id}.hdf5"
+  ages_pattern: "data/{simulation}/{subhalo_id}/{subhalo_id}_ages.dat"
+  image_pattern: "data/{simulation}/{subhalo_id}/broadband_{subhalo_id}.fits"
+  kids_results_dir: "data/{simulation}/KIDS/results"
+  kids_image_pattern: "data/{simulation}/KIDS/snapnum_096/zx/data/broadband_{subhalo_id}.fits"
