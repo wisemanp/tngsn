@@ -4,7 +4,8 @@
 # Simulation settings
 simulation:
   name: "TNG50-1"
-  snapshot: 99
+  snapshot: 99              # primary snapshot (e.g., 99 for z~0)
+  kids_snapshot: 96         # snapshot used for KIDS alignment (e.g., 96)
   n_cores: 16
   output_dir: "simout"
   min_stellar_mass: 5.0e9  # Minimum stellar mass in solar masses
@@ -75,11 +76,12 @@ cosmology:
 paths:
   root_path: "."  # Current directory by default
   
-  # Relative paths from root_path
-  galmeta_file: "data/{simulation}/galmeta.csv"
-  morph_file: "data/{simulation}/morphs_i.hdf5"
-  cutout_pattern: "data/{simulation}/{subhalo_id}/cutout_{subhalo_id}.hdf5"
-  ages_pattern: "data/{simulation}/{subhalo_id}/{subhalo_id}_ages.dat"
-  image_pattern: "data/{simulation}/{subhalo_id}/broadband_{subhalo_id}.fits"
+  # Relative paths from root_path (consistent structure: data/{simulation}/snap{snapshot}/...)
+  galmeta_file: "data/{simulation}/snap{snapshot}/galmeta.csv"
+  morph_file: "data/{simulation}/snap{snapshot}/morphs_i.hdf5"
+  cutout_pattern: "data/{simulation}/snap{snapshot}/{subhalo_id}/cutout_{subhalo_id}.hdf5"
+  ages_pattern: "data/{simulation}/snap{snapshot}/{subhalo_id}/{subhalo_id}_ages.dat"
+  image_pattern: "data/{simulation}/snap{snapshot}/{subhalo_id}/broadband_{subhalo_id}.fits"
+  # KIDS artifacts allow separate snapshot (kids_snapshot); formatted with zero padding
   kids_results_dir: "data/{simulation}/KIDS/results"
-  kids_image_pattern: "data/{simulation}/KIDS/snapnum_096/zx/data/broadband_{subhalo_id}.fits"
+  kids_image_pattern: "data/{simulation}/KIDS/snapnum_{kids_snapshot:03d}/zx/data/broadband_{subhalo_id}.fits"

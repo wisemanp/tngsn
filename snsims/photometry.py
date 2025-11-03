@@ -34,6 +34,7 @@ def load_kids_photometry_results(sim, results_dir=None):
     pandas.DataFrame : KIDS photometry results with morphology
     """
     if results_dir is None:
+        # Fallback legacy location without snapshot
         results_dir = f'data/{sim}/KIDS/results'
     
     results_file = os.path.join(results_dir, 'photometry_results.csv')
@@ -147,7 +148,7 @@ def multi_band_photometry(img_path, positions, bands=['g', 'r', 'i', 'z']):
     return band_results
 
 
-def get_kids_image_path(subhalo_id, sim, image_type='noisy'):
+def get_kids_image_path(subhalo_id, sim, image_type='noisy', kids_snapshot=None, root_path=None, pattern=None):
     """
     Get path to KIDS image file.
     
@@ -164,14 +165,48 @@ def get_kids_image_path(subhalo_id, sim, image_type='noisy'):
     --------
     str : Path to KIDS image file
     """
+    # If a pattern is provided (already resolved with root and kids_snapshot), prefer it if it exists
+    if pattern is not None:
+        if os.path.isfile(pattern):
+            return pattern
+        # continue to try other constructions if missing
+
+    # Build path with kids_snapshot if provided; fallback to legacy snapnum_096
+    snapnum = f"{int(kids_snapshot):03d}" if kids_snapshot is not None else "096"
+    # Preferred layout: with snapnum folder
+    base = os.path.join(root_path or ".", f"data/{sim}/KIDS/snapnum_{snapnum}/zx")
+    candidates = []
     if image_type == 'noisy':
-        return f'data/{sim}/KIDS/snapnum_096/zx/noisy/noisy_broadband_{subhalo_id}.fits'
+        candidates.append(os.path.join(base, 'noisy', f'noisy_broadband_{subhalo_id}.fits'))
     else:
-        return f'data/{sim}/KIDS/snapnum_096/zx/data/broadband_{subhalo_id}.fits'
+        candidates.append(os.path.join(base, 'data', f'broadband_{subhalo_id}.fits'))
+
+    # Legacy: default to snapnum_096 if specific kids_snapshot missing
+    if kids_snapshot is not None and int(kids_snapshot) != 96:
+        legacy_base = os.path.join(root_path or ".", f"data/{sim}/KIDS/snapnum_096/zx")
+        if image_type == 'noisy':
+            candidates.append(os.path.join(legacy_base, 'noisy', f'noisy_broadband_{subhalo_id}.fits'))
+        else:
+            candidates.append(os.path.join(legacy_base, 'data', f'broadband_{subhalo_id}.fits'))
+
+    # Extra legacy: no snapnum folder at all
+    nosnap_base = os.path.join(root_path or ".", f"data/{sim}/KIDS/zx")
+    if image_type == 'noisy':
+        candidates.append(os.path.join(nosnap_base, 'noisy', f'noisy_broadband_{subhalo_id}.fits'))
+    else:
+        candidates.append(os.path.join(nosnap_base, 'data', f'broadband_{subhalo_id}.fits'))
+
+    for c in candidates:
+        if os.path.isfile(c):
+            return c
+    # Fall back to the first constructed path
+    return candidates[0]
 
 
 def perform_kids_aperture_photometry(subhalo_id, sn_data, sim, bands=['g', 'r', 'i', 'z'],
-                                    image_type='noisy', use_source_params=True):
+                                    image_type='noisy', use_source_params=True,
+                                    root_path=None, kids_image_pattern=None,
+                                    kids_snapshot=None, kids_results_dir=None):
     """
     Perform aperture photometry on KIDS images at SN positions.
     
@@ -194,8 +229,12 @@ def perform_kids_aperture_photometry(subhalo_id, sn_data, sim, bands=['g', 'r', 
     --------
     dict : Photometry results by band
     """
-    # Get KIDS image path
-    kids_image_path = get_kids_image_path(subhalo_id, sim, image_type)
+    # Get KIDS image path (pattern takes precedence)
+    kids_image_path = get_kids_image_path(
+        subhalo_id, sim, image_type,
+        kids_snapshot=kids_snapshot, root_path=root_path,
+        pattern=kids_image_pattern
+    )
     
     if not os.path.isfile(kids_image_path):
         print(f"Warning: KIDS image not found: {kids_image_path}")
@@ -220,7 +259,7 @@ def perform_kids_aperture_photometry(subhalo_id, sn_data, sim, bands=['g', 'r', 
         # Try to use KIDS source parameters for better apertures
         if use_source_params:
             try:
-                kids_results = load_kids_photometry_results(sim)
+                kids_results = load_kids_photometry_results(sim, results_dir=kids_results_dir)
                 if subhalo_id in kids_results.index:
                     kids_data = kids_results.loc[subhalo_id]
                     
@@ -303,7 +342,9 @@ def perform_kids_aperture_photometry(subhalo_id, sn_data, sim, bands=['g', 'r', 
 
 def get_photometry_for_subhalo(subhalo_id, sn_data, photometry_type, sim,
                               bands=['g', 'r', 'i', 'z'], kids_results=None,
-                              kids_aperture_mode='direct'):
+                              kids_aperture_mode='direct', kids_image_type='noisy',
+                              root_path=None, kids_image_pattern=None, kids_snapshot=None,
+                              kids_results_dir=None, image_path=None):
     """
     Get photometry for a subhalo using either regular or KIDS data.
     
@@ -336,7 +377,12 @@ def get_photometry_for_subhalo(subhalo_id, sn_data, photometry_type, sim,
         if kids_aperture_mode == 'direct':
             # Perform aperture photometry directly on KIDS images
             band_mags = perform_kids_aperture_photometry(
-                subhalo_id, sn_data, sim, bands
+                subhalo_id, sn_data, sim, bands,
+                image_type=kids_image_type,
+                root_path=root_path,
+                kids_image_pattern=kids_image_pattern,
+                kids_snapshot=kids_snapshot,
+                kids_results_dir=kids_results_dir
             )
         else:
             # Use pre-computed KIDS photometry results
@@ -361,8 +407,10 @@ def get_photometry_for_subhalo(subhalo_id, sn_data, photometry_type, sim,
                         band_mags[band] = pd.Series([np.nan] * len(sn_data))
     
     elif photometry_type == 'regular':
-        # Use regular TNG broadband images
-        image_path = f'data/{sim}/{subhalo_id}/broadband_{subhalo_id}.fits'
+        # Use regular TNG broadband images. Prefer provided resolved image_path.
+        if image_path is None:
+            # Legacy fallback
+            image_path = os.path.join(root_path or ".", f'data/{sim}/{subhalo_id}/broadband_{subhalo_id}.fits')
         
         if not os.path.isfile(image_path):
             print(f"Warning: Regular image not found for subhalo {subhalo_id}")
@@ -432,7 +480,8 @@ def determine_photometry_strategy(subhalo_ids, galmeta,
                                  mass_threshold=10**9.5,
                                  force_kids=False, 
                                  force_regular=False,
-                                 sim='TNG50-1'):
+                                 sim='TNG50-1',
+                                 kids_results_dir=None):
     """
     Determine photometry strategy for each subhalo and preload KIDS data if needed.
     
@@ -472,7 +521,7 @@ def determine_photometry_strategy(subhalo_ids, galmeta,
     kids_results = None
     if needs_kids:
         try:
-            kids_results = load_kids_photometry_results(sim)
+            kids_results = load_kids_photometry_results(sim, results_dir=kids_results_dir)
             print(f"Loaded KIDS results for {len(kids_results)} galaxies")
         except FileNotFoundError as e:
             print(f"Warning: Could not load KIDS results: {e}")

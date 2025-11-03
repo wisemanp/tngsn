@@ -131,15 +131,93 @@ class TNGSNSimulation:
             
         path_template = self.paths[path_key]
         
-        # Add simulation name to format kwargs if not provided
+        # Add defaults to format kwargs
+        sim_cfg = self.config['simulation']
         if 'simulation' not in format_kwargs:
-            format_kwargs['simulation'] = self.config['simulation']['name']
+            format_kwargs['simulation'] = sim_cfg['name']
+        if 'snapshot' not in format_kwargs:
+            format_kwargs['snapshot'] = sim_cfg.get('snapshot')
+        # kids_snapshot may be different; fall back to snapshot if missing
+        if 'kids_snapshot' not in format_kwargs:
+            format_kwargs['kids_snapshot'] = sim_cfg.get('kids_snapshot', sim_cfg.get('snapshot'))
             
         try:
             formatted_path = path_template.format(**format_kwargs)
             return formatted_path
         except KeyError as e:
             raise ValueError(f"Missing format parameter {e} for path '{path_key}'")
+
+    def resolve_path(self, path_key: str, **format_kwargs) -> str:
+        """Resolve a path and apply fallbacks for legacy layouts.
+
+        Strategy:
+        - Try the configured pattern (with snapshot/kids_snapshot)
+        - If missing and not a KIDS path, try without the '/snap{snapshot}/' segment
+        - If a KIDS path and missing, try legacy locations (e.g., without snapnum segment)
+        """
+        primary = self.get_path(path_key, **format_kwargs)
+        if os.path.exists(primary):
+            return primary
+
+        # For catalog-like singletons, prefer snapshot-specific location if the directory exists
+        if path_key in ('galmeta_file', 'morph_file'):
+            primary_parent = os.path.dirname(primary)
+            if os.path.isdir(primary_parent):
+                # Directory exists; trust the primary path (let downstream code error clearly if file missing)
+                return primary
+
+        # Attempt fallback without '/snap{snapshot}/'
+        try:
+            sim_cfg = self.config['simulation']
+            snapshot = sim_cfg.get('snapshot')
+            if snapshot is not None:
+                without_snap = primary.replace(f"/snap{snapshot}/", "/")
+                if os.path.exists(without_snap):
+                    return without_snap
+        except Exception:
+            pass
+
+        # KIDS-specific fallbacks
+        if path_key.startswith('kids_'):
+            # Try legacy results dir without snapnum
+            if 'results' in path_key:
+                sim = format_kwargs.get('simulation', self.config['simulation']['name'])
+                legacy = os.path.join(self.root_path, f"data/{sim}/KIDS/results")
+                if os.path.exists(legacy):
+                    return legacy
+            # Try default snapnum_096 if different kids_snapshot was set
+            try:
+                sim = format_kwargs.get('simulation', self.config['simulation']['name'])
+                legacy_img = os.path.join(self.root_path, f"data/{sim}/KIDS/snapnum_096/zx/data")
+                if os.path.isdir(legacy_img):
+                    # if it's an image pattern, reconstruct full path including filename if provided
+                    if 'subhalo_id' in format_kwargs:
+                        subhalo_id = format_kwargs['subhalo_id']
+                        candidate = os.path.join(legacy_img, f"broadband_{subhalo_id}.fits")
+                        if os.path.exists(candidate):
+                            return candidate
+                    return legacy_img
+            except Exception:
+                pass
+
+        # If this is a regular image or cutout pattern, try rebuilding without the snap segment
+        # Note: galmeta_file and morph_file are handled above to avoid incorrect fallback when their
+        # snapshot-specific directories exist.
+        if path_key in ('image_pattern', 'cutout_pattern', 'ages_pattern'):
+            try:
+                # Remove '/snap{snapshot}' segment if present
+                parts = primary.split('/snap')
+                if len(parts) > 1:
+                    # e.g., data/TNG50-1/snap99/... -> data/TNG50-1/...
+                    no_snap = parts[0] + '/' + parts[1].split('/', 1)[1]
+                    no_snap = no_snap if no_snap.startswith('/') else os.path.join(self.root_path, no_snap)
+                    # Only fallback if the no-snap sibling exists
+                    if os.path.exists(no_snap):
+                        return no_snap
+            except Exception:
+                pass
+
+        return primary
     
     def setup_logging(self):
         """Setup logging configuration."""
@@ -182,17 +260,20 @@ class TNGSNSimulation:
         return {
             'paths': {
                 'root_path': os.getcwd(),
-                'galmeta_file': "data/{simulation}/galmeta.csv",
-                'morph_file': "data/{simulation}/morphs_i.hdf5", 
-                'cutout_pattern': "data/{simulation}/{subhalo_id}/cutout_{subhalo_id}.hdf5",
-                'ages_pattern': "data/{simulation}/{subhalo_id}/{subhalo_id}_ages.dat",
-                'image_pattern': "data/{simulation}/{subhalo_id}/broadband_{subhalo_id}.fits",
+                # Snapshot-aware canonical layout
+                'galmeta_file': "data/{simulation}/snap{snapshot}/galmeta.csv",
+                'morph_file': "data/{simulation}/snap{snapshot}/morphs_i.hdf5", 
+                'cutout_pattern': "data/{simulation}/snap{snapshot}/{subhalo_id}/cutout_{subhalo_id}.hdf5",
+                'ages_pattern': "data/{simulation}/snap{snapshot}/{subhalo_id}/{subhalo_id}_ages.dat",
+                'image_pattern': "data/{simulation}/snap{snapshot}/{subhalo_id}/broadband_{subhalo_id}.fits",
+                # KIDS: results live outside snapnum; images use per-snapnum folders
                 'kids_results_dir': "data/{simulation}/KIDS/results",
-                'kids_image_pattern': "data/{simulation}/KIDS/snapnum_096/zx/data/broadband_{subhalo_id}.fits"
+                'kids_image_pattern': "data/{simulation}/KIDS/snapnum_{kids_snapshot:03d}/zx/data/broadband_{subhalo_id}.fits"
             },
             'simulation': {
                 'name': 'TNG50-1',
                 'snapshot': 99,
+                'kids_snapshot': 96,
                 'n_cores': 4,
                 'output_dir': 'simout',
                 'min_stellar_mass': 1e8,
@@ -286,7 +367,7 @@ class TNGSNSimulation:
         sim = self.config['simulation']['name']
         
         # Load galaxy metadata using resolved path
-        galmeta_path = self.get_path('galmeta_file', simulation=sim)
+        galmeta_path = self.resolve_path('galmeta_file', simulation=sim)
         
         if not os.path.exists(galmeta_path):
             raise FileNotFoundError(f"Galaxy metadata file not found: {galmeta_path}")
@@ -362,18 +443,18 @@ class TNGSNSimulation:
             self.photometry_types, self.kids_results = photometry.determine_photometry_strategy(
                 subhalo_ids, self.galmeta,
                 mass_threshold=phot_config.get('mass_threshold', 10**9.5),
-                kids_results_dir=self.get_path('kids_results_dir')
+                kids_results_dir=self.resolve_path('kids_results_dir')
             )
         elif phot_config.get('mode') == 'kids':
             self.photometry_types = {sid: 'kids' for sid in subhalo_ids}
-            kids_results_dir = self.get_path('kids_results_dir')
-            self.kids_results = photometry.load_kids_photometry_results(kids_results_dir)
+            kids_results_dir = self.resolve_path('kids_results_dir')
+            self.kids_results = photometry.load_kids_photometry_results(self.config['simulation']['name'], results_dir=kids_results_dir)
         else:
             self.photometry_types = {sid: 'regular' for sid in subhalo_ids}
             self.kids_results = None
         
         # Load morphology data
-        morph_file = self.get_path('morph_file')
+        morph_file = self.resolve_path('morph_file')
         if os.path.exists(morph_file):
             self.morphology_data = morphology.load_regular_morphology(morph_file, band=morph_config.get('band', 'i'))
             logging.info(f"Loaded regular morphology data from {morph_file}")
@@ -398,7 +479,7 @@ class TNGSNSimulation:
         sim = self.config['simulation']['name']
         
         # Check for required files using resolved paths
-        cutout_path = self.get_path('cutout_pattern', simulation=sim, subhalo_id=subhalo_id)
+        cutout_path = self.resolve_path('cutout_pattern', simulation=sim, subhalo_id=subhalo_id)
         
         if not os.path.isfile(cutout_path):
             print(f'{subhalo_id} has no snapshot, skipping')
@@ -475,7 +556,7 @@ class TNGSNSimulation:
             stfs = np.array(stars['GFM_StellarFormationTime'][star_inds])
         
         # Load or calculate ages using resolved path
-        ages_path = self.get_path('ages_pattern', simulation=sim, subhalo_id=subhalo_id)
+        ages_path = self.resolve_path('ages_pattern', simulation=sim, subhalo_id=subhalo_id)
         
         if os.path.isfile(ages_path):
             ages = np.loadtxt(ages_path, dtype=float)
@@ -607,7 +688,7 @@ class TNGSNSimulation:
         
         try:
             # Get image header for pixel scale conversion using resolved path
-            image_path = self.get_path('image_pattern', simulation=sim, subhalo_id=subhalo_id)
+            image_path = self.resolve_path('image_pattern', simulation=sim, subhalo_id=subhalo_id)
             
             if os.path.isfile(image_path):
                 with fits.open(image_path) as hdul:
@@ -656,7 +737,11 @@ class TNGSNSimulation:
                 kids_results=self.kids_results,
                 kids_aperture_mode=phot_config.get('kids_aperture_mode', 'direct'),
                 kids_image_type=phot_config.get('kids_image_type', 'noisy'),
-                root_path=self.root_path
+                root_path=self.root_path,
+                kids_image_pattern=self.get_path('kids_image_pattern', subhalo_id=subhalo_id),
+                kids_snapshot=self.config['simulation'].get('kids_snapshot'),
+                kids_results_dir=self.resolve_path('kids_results_dir'),
+                image_path=self.resolve_path('image_pattern', simulation=sim, subhalo_id=subhalo_id)
             )
             
             # Add local colors
