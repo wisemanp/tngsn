@@ -12,6 +12,7 @@ import pandas as pd
 import sys
 import os
 from pathlib import Path
+import logging
 
 # Add the tngsn directory to path
 sys.path.insert(0, str(Path(__file__).parent))
@@ -20,6 +21,9 @@ from snsims.simulation import TNGSNSimulation
 
 def test_ztf_simulation():
     """Test ZTF-like simulation capability."""
+    logger = logging.getLogger(__name__)
+    if not logger.handlers:
+        logging.basicConfig(level=logging.INFO)
     
     print("🔬 Testing ZTF-like SN Ia simulation...")
     print("="*50)
@@ -89,6 +93,73 @@ def test_ztf_simulation():
         print(f"   ⚠️  Could not load metadata: {e}")
         print(f"   📝 This is expected if you don't have TNG data downloaded")
     
+    # Optional smoke tests: try to find either regular or KIDS images
+    found_any_image = False
+
+    # Regular images: do we have a TNG image to measure colors + DLR?
+    try:
+        if hasattr(sim, 'galmeta') and len(sim.galmeta) > 0:
+            candidate_ids = list(sim.galmeta.index.astype(int))
+            chosen = None
+            for cid in candidate_ids[:50]:  # scan first few
+                img_path = sim.resolve_path('image_pattern', simulation=simname, subhalo_id=cid)
+                if os.path.isfile(img_path):
+                    chosen = (cid, img_path)
+                    break
+            if chosen:
+                cid, imgp = chosen
+                print(f"\n🎨 Regular photometry+DLR check on subhalo {cid} (image found)")
+                # Minimal single-SN dataframe, 2 kpc offset to avoid zero radius
+                sn_df = pd.DataFrame({'x_pos': [2.0], 'y_pos': [2.0]})
+                sn_df = sim._calculate_pixel_positions(cid, sn_df)
+                sn_df = sim._calculate_photometry(cid, sn_df)
+                sn_df = sim._calculate_morphology(cid, sn_df)
+                cols = [c for c in ['local_g','local_r','local_i','local_z','localrestframe_gr','localrestframe_gz','d_DLR'] if c in sn_df.columns]
+                print(sn_df[cols].head())
+                found_any_image = True
+            else:
+                logger.warning("No regular TNG image found among first few galaxies; skipping regular photometry+DLR smoke test.")
+    except Exception as e:
+        logger.warning(f"Regular photometry+DLR smoke test failed: {e}")
+
+    # Optional smoke test: KIDS mocks at snap96 (force kids, direct aperture)
+    try:
+        kids_overrides = dict(config_overrides)
+        kids_overrides.update({
+            'photometry__force_kids': True,
+            'photometry__kids_aperture_mode': 'direct',
+            'simulation__kids_snapshot': 96,
+        })
+        sim_k = TNGSNSimulation(**kids_overrides)
+        sim_k.load_metadata()
+        sim_k.setup_photometry_and_morphology(list(sim_k.galmeta.index.astype(int))[:10])
+        kids_id = None
+        for cid in sim_k.galmeta.index.astype(int)[:50]:
+            kidspath = sim_k.resolve_path('kids_image_pattern', simulation=simname, subhalo_id=cid)
+            if os.path.isfile(kidspath):
+                kids_id = cid
+                break
+        if kids_id is not None:
+            print(f"\n🧪 KIDS photometry+DLR check on subhalo {kids_id} (snapnum_096)")
+            sn_df = pd.DataFrame({'x_pos': [2.0], 'y_pos': [2.0]})
+            sn_df = sim_k._calculate_pixel_positions(kids_id, sn_df)
+            sn_df = sim_k._calculate_photometry(kids_id, sn_df)
+            sn_df = sim_k._calculate_morphology(kids_id, sn_df)
+            cols = [c for c in ['local_g','local_r','local_i','local_z','localrestframe_gr','localrestframe_gz','d_DLR'] if c in sn_df.columns]
+            print(sn_df[cols].head())
+            found_any_image = True
+        else:
+            logger.warning("No KIDS image found under snapnum_096; skipping KIDS photometry+DLR smoke test.")
+    except FileNotFoundError as e:
+        logger.warning(f"KIDS assets missing or results unavailable: {e}")
+    except Exception as e:
+        logger.warning(f"KIDS photometry+DLR smoke test failed: {e}")
+
+    # Fail hard if we couldn't find any image mocks at all (neither regular nor KIDS)
+    if not found_any_image:
+        logger.error("No image mocks found (regular TNG or KIDS) — failing test.")
+        raise AssertionError("No image mocks found (regular TNG or KIDS)")
+
     # Verify critical physics parameters are loaded
     print(f"\n🧬 Verifying critical physics parameters:")
     print(f"   - Ginolin+25 x1 params: {sim.config['light_curve']['x1_params']}")
