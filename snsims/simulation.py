@@ -18,6 +18,7 @@ import warnings
 from pandas.errors import SettingWithCopyWarning
 from pathlib import Path
 import logging
+import shutil
 
 # Import local modules
 from . import sn_luminosity
@@ -68,6 +69,10 @@ class TNGSNSimulation:
         self.photometry_types = None
         self.morphology_data = None
         self.kids_results = None
+        
+        # Track ephemeral artifacts for cleanup
+        self._temp_files = []
+        self._temp_dirs = []
         
     def setup_paths(self):
         """Setup root path and resolve all relative paths."""
@@ -270,6 +275,15 @@ class TNGSNSimulation:
                 'kids_results_dir': "data/{simulation}/KIDS/results",
                 'kids_image_pattern': "data/{simulation}/KIDS/snapnum_{kids_snapshot:03d}/zx/data/broadband_{subhalo_id}.fits"
             },
+            'backend': {
+                'mode': 'local',  # 'local' | 'api' | 'cloud'
+                'api_cache_dir': '.cache/tngsn',
+                'api_base_url': None,
+                'api_seed_ids': [],
+                # Cloud/temp behavior
+                'cleanup_temp': False,    # if True, remove temp artifacts post run
+                'persist_ages': True      # if False, do not write ages files to disk
+            },
             'simulation': {
                 'name': 'TNG50-1',
                 'snapshot': 99,
@@ -365,15 +379,46 @@ class TNGSNSimulation:
     def load_metadata(self):
         """Load galaxy metadata and determine processing strategy."""
         sim = self.config['simulation']['name']
+        snapshot = int(self.config['simulation'].get('snapshot', 99))
+        backend_mode = self.config.get('backend', {}).get('mode', 'local')
         
         # Load galaxy metadata using resolved path
         galmeta_path = self.resolve_path('galmeta_file', simulation=sim)
         
         if not os.path.exists(galmeta_path):
-            raise FileNotFoundError(f"Galaxy metadata file not found: {galmeta_path}")
-            
-        logging.info(f"Loading galaxy metadata from {galmeta_path}")
-        self.galmeta = pd.read_csv(galmeta_path, index_col=0)
+            if backend_mode == 'api':
+                # Build minimal galmeta via API for IDs inferred from available cutouts or a small query.
+                from .providers import TNGAPIProvider
+                provider = TNGAPIProvider(
+                    base_url=self.config.get('backend', {}).get('api_base_url'),
+                    cache_dir=self.config.get('backend', {}).get('api_cache_dir')
+                )
+                # Heuristic: if cutouts exist locally, use their IDs; else, pick top few from API
+                subdirs = []
+                snap_dir = Path(self.root_path) / f"data/{sim}/snap{snapshot}"
+                if snap_dir.exists():
+                    subdirs = [p for p in snap_dir.iterdir() if p.is_dir()]
+                ids = [int(p.name) for p in subdirs if p.name.isdigit()]
+                if not ids:
+                    ids = list(self.config.get('backend', {}).get('api_seed_ids') or [])
+                if not ids:
+                    # Query API for a small seed sample (e.g., first 100 massive)
+                    try:
+                        base = provider._snap_base(sim, snapshot)
+                        res = provider.get_subhalo_info(sim, snapshot, 0)  # will fail; using next block
+                    except Exception:
+                        pass
+                    # Fall back to a predictable range; caller can refine later
+                    ids = []
+                galmeta_df = provider.build_galmeta_for_ids(sim, snapshot, ids)
+                if galmeta_df is None or galmeta_df.empty:
+                    raise FileNotFoundError(f"Galaxy metadata file not found and API fallback yielded no entries: {galmeta_path}")
+                self.galmeta = galmeta_df
+            else:
+                raise FileNotFoundError(f"Galaxy metadata file not found: {galmeta_path}")
+        else:
+            logging.info(f"Loading galaxy metadata from {galmeta_path}")
+            self.galmeta = pd.read_csv(galmeta_path, index_col=0)
         
         # Calculate true stellar masses
         self.galmeta['mass_stars_true'] = (
@@ -480,10 +525,51 @@ class TNGSNSimulation:
         
         # Check for required files using resolved paths
         cutout_path = self.resolve_path('cutout_pattern', simulation=sim, subhalo_id=subhalo_id)
-        
         if not os.path.isfile(cutout_path):
-            print(f'{subhalo_id} has no snapshot, skipping')
-            return None
+            backend_mode = self.config.get('backend', {}).get('mode', 'local')
+            # Try API backend
+            if backend_mode == 'api':
+                try:
+                    from .providers import TNGAPIProvider
+                    provider = TNGAPIProvider(
+                        base_url=self.config.get('backend', {}).get('api_base_url'),
+                        cache_dir=self.config.get('backend', {}).get('api_cache_dir')
+                    )
+                    api_cutout = provider.get_cutout_path(sim, int(self.config['simulation']['snapshot']), subhalo_id)
+                    if api_cutout and api_cutout.exists():
+                        cutout_path = str(api_cutout)
+                    else:
+                        print(f'{subhalo_id} has no snapshot (local) and API fetch failed, skipping')
+                        return None
+                except Exception as e:
+                    print(f"API backend error for subhalo {subhalo_id}: {e}")
+                    return None
+            elif backend_mode == 'cloud':
+                # Use cloud provider to extract a temp cutout directly from local snapshot files
+                try:
+                    from .providers import TNGCloudProvider
+                    provider = TNGCloudProvider(
+                        snapshot_root=os.environ.get('SNAPSHOT_ROOT'),
+                        temp_base=self.config.get('backend', {}).get('api_cache_dir') or None
+                    )
+                    tmp = provider.extract_cutout(sim, int(self.config['simulation']['snapshot']), subhalo_id)
+                    if tmp and os.path.isfile(tmp):
+                        cutout_path = str(tmp)
+                        # track temp for cleanup
+                        self._temp_files.append(cutout_path)
+                        try:
+                            self._temp_dirs.append(str(Path(cutout_path).parent))
+                        except Exception:
+                            pass
+                    else:
+                        print(f'{subhalo_id}: cloud extract returned no cutout, skipping')
+                        return None
+                except Exception as e:
+                    print(f"Cloud backend error for subhalo {subhalo_id}: {e}")
+                    return None
+            else:
+                print(f'{subhalo_id} has no snapshot, skipping')
+                return None
         
         try:
             # Load stellar particle data
@@ -566,9 +652,14 @@ class TNGSNSimulation:
             t = cosmo.lookback_time(zs)
             ages = np.clip(t.value, a_min=0.05, a_max=None)
             
-            # Save ages for future use
-            os.makedirs(os.path.dirname(ages_path), exist_ok=True)
-            np.savetxt(ages_path, ages)
+            # Save ages for future use only if persistence enabled
+            persist_ages = bool(self.config.get('backend', {}).get('persist_ages', True))
+            if persist_ages:
+                os.makedirs(os.path.dirname(ages_path), exist_ok=True)
+                np.savetxt(ages_path, ages)
+            else:
+                # treat as ephemeral; nothing written to disk
+                pass
         
         # Create galaxy catalog
         galaxy_catalog = host_properties.create_galaxy_catalog(
@@ -689,6 +780,18 @@ class TNGSNSimulation:
         try:
             # Get image header for pixel scale conversion using resolved path
             image_path = self.resolve_path('image_pattern', simulation=sim, subhalo_id=subhalo_id)
+            if not os.path.isfile(image_path) and self.config.get('backend', {}).get('mode') == 'api':
+                try:
+                    from .providers import TNGAPIProvider
+                    provider = TNGAPIProvider(
+                        base_url=self.config.get('backend', {}).get('api_base_url'),
+                        cache_dir=self.config.get('backend', {}).get('api_cache_dir')
+                    )
+                    api_img = provider.get_image_path(sim, int(self.config['simulation']['snapshot']), subhalo_id)
+                    if api_img and api_img.exists():
+                        image_path = str(api_img)
+                except Exception:
+                    pass
             
             if os.path.isfile(image_path):
                 with fits.open(image_path) as hdul:
@@ -730,6 +833,21 @@ class TNGSNSimulation:
         photometry_type = self.photometry_types.get(subhalo_id, 'regular')
         
         try:
+            # Resolve image path with API fallback if needed
+            image_path = self.resolve_path('image_pattern', simulation=sim, subhalo_id=subhalo_id)
+            if not os.path.isfile(image_path) and self.config.get('backend', {}).get('mode') == 'api':
+                try:
+                    from .providers import TNGAPIProvider
+                    provider = TNGAPIProvider(
+                        base_url=self.config.get('backend', {}).get('api_base_url'),
+                        cache_dir=self.config.get('backend', {}).get('api_cache_dir')
+                    )
+                    api_img = provider.get_image_path(sim, int(self.config['simulation']['snapshot']), subhalo_id)
+                    if api_img and api_img.exists():
+                        image_path = str(api_img)
+                except Exception:
+                    pass
+
             # Get photometry using appropriate method
             band_mags, sn_data = photometry.get_photometry_for_subhalo(
                 subhalo_id, sn_data, photometry_type, sim,
@@ -741,7 +859,7 @@ class TNGSNSimulation:
                 kids_image_pattern=self.get_path('kids_image_pattern', subhalo_id=subhalo_id),
                 kids_snapshot=self.config['simulation'].get('kids_snapshot'),
                 kids_results_dir=self.resolve_path('kids_results_dir'),
-                image_path=self.resolve_path('image_pattern', simulation=sim, subhalo_id=subhalo_id)
+                image_path=image_path
             )
             
             # Add local colors
@@ -783,8 +901,31 @@ class TNGSNSimulation:
     
     def _get_subhalo_info(self, subhalo_id):
         """Get subhalo information from TNG API."""
-        # This would use the TNG API to get subhalo center
-        # For now, return dummy data
+        try:
+            mode = self.config.get('backend', {}).get('mode')
+            sim = self.config['simulation']['name']
+            snap = int(self.config['simulation'].get('snapshot', 99))
+            if mode == 'api':
+                from .providers import TNGAPIProvider
+                provider = TNGAPIProvider(
+                    base_url=self.config.get('backend', {}).get('api_base_url'),
+                    cache_dir=self.config.get('backend', {}).get('api_cache_dir')
+                )
+                info = provider.get_subhalo_info(sim, snap, int(subhalo_id))
+                if isinstance(info, dict):
+                    if all(k in info for k in ('pos_x', 'pos_y', 'pos_z')):
+                        return {'pos_x': info['pos_x'], 'pos_y': info['pos_y'], 'pos_z': info['pos_z']}
+                    if 'pos' in info and isinstance(info['pos'], (list, tuple)) and len(info['pos']) >= 3:
+                        return {'pos_x': info['pos'][0], 'pos_y': info['pos'][1], 'pos_z': info['pos'][2]}
+            elif mode == 'cloud':
+                from .providers import TNGCloudProvider
+                provider = TNGCloudProvider(snapshot_root=os.environ.get('SNAPSHOT_ROOT'))
+                center = provider.get_subhalo_center(sim, snap, int(subhalo_id))
+                if isinstance(center, dict) and all(k in center for k in ('pos_x','pos_y','pos_z')):
+                    return center
+        except Exception:
+            pass
+        # Fallback if API not used/available
         return {'pos_x': 0, 'pos_y': 0, 'pos_z': 0}
     
     def run_simulation(self, n_subhalos=None, subhalo_ids=None):
@@ -853,10 +994,77 @@ class TNGSNSimulation:
             print(f"Simulation complete. Results saved to {output_path}")
             print(f"Generated {len(combined_results)} SNe from {len(valid_results)} galaxies")
             
+            # Cleanup temp artifacts if requested
+            if bool(self.config.get('backend', {}).get('cleanup_temp', False)):
+                self._post_run_cleanup()
+            
             return combined_results
         else:
             print("No valid results generated")
+            # Even on empty results, still perform cleanup if requested
+            if bool(self.config.get('backend', {}).get('cleanup_temp', False)):
+                self._post_run_cleanup()
             return pd.DataFrame()
+
+    def _post_run_cleanup(self):
+        """Remove temporary files and directories produced during run when cleanup enabled."""
+        # Remove tracked temp files
+        for f in list(self._temp_files):
+            try:
+                if isinstance(f, (str, Path)) and os.path.isfile(f):
+                    os.remove(f)
+            except Exception:
+                pass
+            finally:
+                self._temp_files.remove(f)
+        # Remove tracked temp directories
+        for d in list(self._temp_dirs):
+            try:
+                if isinstance(d, (str, Path)) and os.path.isdir(d):
+                    shutil.rmtree(d, ignore_errors=True)
+            except Exception:
+                pass
+            finally:
+                self._temp_dirs.remove(d)
+        # Optional: clear API cache in cloud mode (defensive; usually unused)
+        if self.config.get('backend', {}).get('mode') == 'cloud':
+            cache_dir = self.config.get('backend', {}).get('api_cache_dir')
+            if cache_dir:
+                try:
+                    cache_dir = Path(cache_dir)
+                    if cache_dir.exists():
+                        shutil.rmtree(cache_dir, ignore_errors=True)
+                except Exception:
+                    pass
+
+    def run_snapshots(self, snapshots, n_subhalos=None, subhalo_ids=None):
+        """
+        Convenience helper: run the pipeline across multiple snapshots.
+
+        Parameters:
+        - snapshots: iterable of int snapshot numbers
+        - n_subhalos, subhalo_ids: forwarded to run_simulation
+
+        Returns: dict mapping snapshot -> DataFrame
+        """
+        results_by_snap = {}
+        original_snapshot = int(self.config['simulation'].get('snapshot', 99))
+        try:
+            for snap in snapshots:
+                # Set snapshot and clear state to force reload
+                self._set_nested_config('simulation.snapshot', int(snap))
+                self.galmeta = None
+                self.morphology_data = None
+                # Run and store
+                df = self.run_simulation(n_subhalos=n_subhalos, subhalo_ids=subhalo_ids)
+                if isinstance(df, pd.DataFrame) and not df.empty:
+                    df = df.copy()
+                    df['snapshot'] = int(snap)
+                results_by_snap[int(snap)] = df
+        finally:
+            # Restore original snapshot
+            self._set_nested_config('simulation.snapshot', original_snapshot)
+        return results_by_snap
 
 
 def main():
