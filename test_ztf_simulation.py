@@ -13,13 +13,14 @@ import sys
 import os
 from pathlib import Path
 import logging
+import argparse
 
 # Add the tngsn directory to path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from snsims.simulation import TNGSNSimulation
 
-def test_ztf_simulation():
+def test_ztf_simulation(simulation: str = "TNG50-1", skip_kids: bool = False):
     """Test ZTF-like simulation capability."""
     logger = logging.getLogger(__name__)
     if not logger.handlers:
@@ -30,7 +31,7 @@ def test_ztf_simulation():
     
     # Configure for ZTF-like survey (low-z, volume-limited)
     config_overrides = {
-        'simulation__name': 'TNG50-1',
+        'simulation__name': simulation,      # was hard-coded to TNG50-1
         'simulation__min_stellar_mass': 5e9,  # Focus on higher mass galaxies
         'subhalo_selection__method': 'observed',  # Use realistic mass distribution
         'subhalo_selection__mass_distribution': 'uniform',
@@ -41,6 +42,7 @@ def test_ztf_simulation():
     # Initialize simulation
     sim = TNGSNSimulation(**config_overrides)
     print(f"✅ Simulation initialized with config:")
+    print(f"   - Simulation: {simulation}")
     print(f"   - Root path: {sim.root_path}")
     print(f"   - Min stellar mass: {sim.config['simulation']['min_stellar_mass']:.1e} M☉")
     print(f"   - Subhalo selection: {sim.config['subhalo_selection']['method']}")
@@ -82,7 +84,7 @@ def test_ztf_simulation():
             show_path('cutout_pattern', 'cutout_pattern', dict(simulation=simname, subhalo_id=example_id))
             show_path('image_pattern', 'image_pattern', dict(simulation=simname, subhalo_id=example_id))
             show_path('ages_pattern', 'ages_pattern', dict(simulation=simname, subhalo_id=example_id))
-            # KIDS image pattern is a file path; show as-is and existence
+            # KIDS image pattern
             kids_img_planned = sim.get_path('kids_image_pattern', simulation=simname, subhalo_id=example_id)
             kids_img_resolved = sim.resolve_path('kids_image_pattern', simulation=simname, subhalo_id=example_id)
             print(f"   - kids_image_pattern:\n       planned : {kids_img_planned}\n       resolved: {kids_img_resolved}\n       exists  : {os.path.exists(kids_img_resolved)}")
@@ -100,6 +102,9 @@ def test_ztf_simulation():
     try:
         if hasattr(sim, 'galmeta') and len(sim.galmeta) > 0:
             candidate_ids = list(sim.galmeta.index.astype(int))
+            # Initialize photometry and morphology strategy for these candidates
+            sim.setup_photometry_and_morphology(candidate_ids[:50])
+
             chosen = None
             for cid in candidate_ids[:50]:  # scan first few
                 img_path = sim.resolve_path('image_pattern', simulation=simname, subhalo_id=cid)
@@ -109,7 +114,6 @@ def test_ztf_simulation():
             if chosen:
                 cid, imgp = chosen
                 print(f"\n🎨 Regular photometry+DLR check on subhalo {cid} (image found)")
-                # Minimal single-SN dataframe, 2 kpc offset to avoid zero radius
                 sn_df = pd.DataFrame({'x_pos': [2.0], 'y_pos': [2.0]})
                 sn_df = sim._calculate_pixel_positions(cid, sn_df)
                 sn_df = sim._calculate_photometry(cid, sn_df)
@@ -122,38 +126,42 @@ def test_ztf_simulation():
     except Exception as e:
         logger.warning(f"Regular photometry+DLR smoke test failed: {e}")
 
-    # Optional smoke test: KIDS mocks at snap96 (force kids, direct aperture)
-    try:
-        kids_overrides = dict(config_overrides)
-        kids_overrides.update({
-            'photometry__force_kids': True,
-            'photometry__kids_aperture_mode': 'direct',
-            'simulation__kids_snapshot': 96,
-        })
-        sim_k = TNGSNSimulation(**kids_overrides)
-        sim_k.load_metadata()
-        sim_k.setup_photometry_and_morphology(list(sim_k.galmeta.index.astype(int))[:10])
-        kids_id = None
-        for cid in sim_k.galmeta.index.astype(int)[:50]:
-            kidspath = sim_k.resolve_path('kids_image_pattern', simulation=simname, subhalo_id=cid)
-            if os.path.isfile(kidspath):
-                kids_id = cid
-                break
-        if kids_id is not None:
-            print(f"\n🧪 KIDS photometry+DLR check on subhalo {kids_id} (snapnum_096)")
-            sn_df = pd.DataFrame({'x_pos': [2.0], 'y_pos': [2.0]})
-            sn_df = sim_k._calculate_pixel_positions(kids_id, sn_df)
-            sn_df = sim_k._calculate_photometry(kids_id, sn_df)
-            sn_df = sim_k._calculate_morphology(kids_id, sn_df)
-            cols = [c for c in ['local_g','local_r','local_i','local_z','localrestframe_gr','localrestframe_gz','d_DLR'] if c in sn_df.columns]
-            print(sn_df[cols].head())
-            found_any_image = True
-        else:
-            logger.warning("No KIDS image found under snapnum_096; skipping KIDS photometry+DLR smoke test.")
-    except FileNotFoundError as e:
-        logger.warning(f"KIDS assets missing or results unavailable: {e}")
-    except Exception as e:
-        logger.warning(f"KIDS photometry+DLR smoke test failed: {e}")
+    # KIDS mocks at snap96: only meaningful for TNG50-1
+    kids_should_run = (simulation == 'TNG50-1') and (not skip_kids)
+    if not kids_should_run:
+        logger.info("Skipping KIDS smoke test (either simulation != TNG50-1 or --skip-kids set).")
+    else:
+        try:
+            kids_overrides = dict(config_overrides)
+            kids_overrides.update({
+                'photometry__force_kids': True,
+                'photometry__kids_aperture_mode': 'direct',
+                'simulation__kids_snapshot': 96,
+            })
+            sim_k = TNGSNSimulation(**kids_overrides)
+            sim_k.load_metadata()
+            sim_k.setup_photometry_and_morphology(list(sim_k.galmeta.index.astype(int))[:10])
+            kids_id = None
+            for cid in sim_k.galmeta.index.astype(int)[:50]:
+                kidspath = sim_k.resolve_path('kids_image_pattern', simulation=simname, subhalo_id=cid)
+                if os.path.isfile(kidspath):
+                    kids_id = cid
+                    break
+            if kids_id is not None:
+                print(f"\n🧪 KIDS photometry+DLR check on subhalo {kids_id} (snapnum_096)")
+                sn_df = pd.DataFrame({'x_pos': [2.0], 'y_pos': [2.0]})
+                sn_df = sim_k._calculate_pixel_positions(kids_id, sn_df)
+                sn_df = sim_k._calculate_photometry(kids_id, sn_df)
+                sn_df = sim_k._calculate_morphology(kids_id, sn_df)
+                cols = [c for c in ['local_g','local_r','local_i','local_z','localrestframe_gr','localrestframe_gz','d_DLR'] if c in sn_df.columns]
+                print(sn_df[cols].head())
+                found_any_image = True
+            else:
+                logger.warning("No KIDS image found under snapnum_096; skipping KIDS photometry+DLR smoke test.")
+        except FileNotFoundError as e:
+            logger.warning(f"KIDS assets missing or results unavailable: {e}")
+        except Exception as e:
+            logger.warning(f"KIDS photometry+DLR smoke test failed: {e}")
 
     # Fail hard if we couldn't find any image mocks at all (neither regular nor KIDS)
     if not found_any_image:
@@ -219,4 +227,9 @@ def test_ztf_simulation():
     return True
 
 if __name__ == "__main__":
-    test_ztf_simulation()
+    parser = argparse.ArgumentParser(description="ZTF-like SN Ia simulation smoke test with optional KIDS check.")
+    parser.add_argument("--simulation", "-s", default="TNG50-1", help="Simulation name (e.g., TNG50-1 or TNG100-1)")
+    parser.add_argument("--skip-kids", action="store_true", help="Skip the KIDS image smoke test")
+    args = parser.parse_args()
+
+    test_ztf_simulation(simulation=args.simulation, skip_kids=args.skip_kids)
